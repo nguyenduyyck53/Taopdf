@@ -2,6 +2,8 @@
 
 PDF Gọn là công cụ web miễn phí để gộp, tách và chỉnh sửa trang PDF ngay trong trình duyệt. File không được tải lên máy chủ.
 
+**Dùng trực tuyến:** [https://nguyenduyyck53.github.io/Taopdf/](https://nguyenduyyck53.github.io/Taopdf/)
+
 ## Tính năng
 
 - Kéo thả và gộp nhiều file PDF.
@@ -28,6 +30,14 @@ Mở `http://localhost:3000`.
 ```bash
 npm test
 ```
+
+Tạo riêng bản tĩnh dành cho GitHub Pages:
+
+```bash
+npm run build:pages
+```
+
+Mỗi lần nhánh `main` được cập nhật, workflow `Deploy GitHub Pages` sẽ tự kiểm thử, build và phát hành website.
 
 ## Phím tắt
 

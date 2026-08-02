@@ -2,15 +2,18 @@
   "name": "pdf-gon",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:pages": "vite build --config static/vite.config.ts",
+    "preview:pages": "vite preview --config static/vite.config.ts",
     "start": "vinext start",
-    "test": "vinext build && node --test tests/*.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "test": "vinext build && vite build --config static/vite.config.ts && node --test tests/*.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern pages-dist"
   },
   "dependencies": {
     "jszip": "3.10.1",
