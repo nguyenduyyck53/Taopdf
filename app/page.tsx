@@ -1,86 +1,81 @@
 "use client";
 
 import {
-  Archive,
+  AlertTriangle,
   Check,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Download,
-  FilePlus2,
-  Files,
-  GripVertical,
+  Eye,
+  FileArchive,
+  FileCheck2,
+  FileText,
+  HardDrive,
+  Languages,
   Layers3,
   LoaderCircle,
   LockKeyhole,
-  Plus,
-  Redo2,
-  RotateCcw,
-  RotateCw,
-  Scissors,
+  RefreshCw,
+  ScanText,
+  Settings2,
   ShieldCheck,
-  Trash2,
-  Undo2,
+  Sigma,
+  Sparkles,
+  Square,
+  Table2,
   UploadCloud,
   X,
 } from "lucide-react";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { PDFDocument } from "pdf-lib";
 import {
-  PAGE_SIZES,
-  buildPdf,
-  parseSplitRanges,
-  splitPdfToZip,
-} from "@/lib/pdf-engine";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+  LANGUAGE_OPTIONS,
+  analyzeLayout,
+  createWordOutput,
+  flattenTesseractLines,
+  groupPdfTextItems,
+  isFormulaText,
+  parsePageRange,
+  safeWordFileName,
+  summarizePages,
+} from "@/lib/ocr-word-engine";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type SourceFile = {
-  id: string;
-  name: string;
-  size: number;
-  bytes: Uint8Array;
+type Phase = "empty" | "loading" | "ready" | "processing" | "done" | "error";
+type LayoutMode = "precise" | "balanced" | "flow";
+type OcrMode = "smart" | "always" | "text";
+type PageState = "waiting" | "text" | "ocr" | "done" | "error";
+
+type LoadedPdf = {
+  file: File;
+  url: string;
+  pdf: PDFDocumentProxy;
   pageCount: number;
-  color: string;
 };
 
-type SourcePage = {
-  id: string;
-  kind: "source";
-  sourceId: string;
-  sourceName: string;
-  sourcePageIndex: number;
-  width: number;
-  height: number;
-  rotation: number;
+type PageProgress = {
+  state: PageState;
+  confidence?: number;
+  tables?: number;
+  formulas?: number;
 };
 
-type BlankPage = {
-  id: string;
-  kind: "blank";
-  sourceName: string;
-  width: number;
-  height: number;
-  background: string;
-  rotation: number;
+type ResultFile = {
+  url: string;
+  blob: Blob;
+  fileName: string;
+  partCount: number;
+  summary: ReturnType<typeof summarizePages>;
 };
 
-type ProjectPage = SourcePage | BlankPage;
-type Toast = { type: "success" | "error"; message: string } | null;
+type Toast = { type: "success" | "error"; text: string } | null;
 
-const SOURCE_COLORS = ["#2d6a5a", "#d97745", "#496d9b", "#8a5a8f", "#8a793f"];
-const DEFAULT_FILE_NAME = "tai-lieu-moi";
-
-let pdfJsLoader: Promise<typeof import("pdfjs-dist/build/pdf.mjs")> | null = null;
+let pdfJsLoader: Promise<typeof import("pdfjs-dist")> | null = null;
 
 function getPdfJs() {
   if (!pdfJsLoader) {
-    pdfJsLoader = import("pdfjs-dist/build/pdf.mjs").then((pdfjs) => {
+    pdfJsLoader = import("pdfjs-dist").then((pdfjs) => {
       pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
       return pdfjs;
     });
@@ -88,103 +83,174 @@ function getPdfJs() {
   return pdfJsLoader;
 }
 
-function makeId(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`;
-}
-
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(bytes > 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
-function safeFileName(name: string) {
-  const cleaned = name
-    .trim()
-    .replace(/\.pdf$/i, "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "D")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-+/g, "-");
-  return cleaned || DEFAULT_FILE_NAME;
+function secondsLabel(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "đang tính…";
+  if (seconds < 60) return `khoảng ${Math.ceil(seconds)} giây`;
+  const minutes = Math.ceil(seconds / 60);
+  return `khoảng ${minutes} phút`;
 }
 
-function downloadBytes(bytes: Uint8Array, fileName: string, type: string) {
-  const blob = new Blob([bytes as BlobPart], { type });
-  const url = URL.createObjectURL(blob);
+function downloadResult(result: ResultFile) {
   const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
+  anchor.href = result.url;
+  anchor.download = result.fileName;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function PageThumbnail({
-  item,
-  index,
-  selected,
-  dragging,
-  sourceColor,
-  onSelect,
-  onDelete,
-  onRotate,
-  onMove,
-  onDragStart,
-  onDrop,
-  getRenderDocument,
-}: {
-  item: ProjectPage;
-  index: number;
-  selected: boolean;
-  dragging: boolean;
-  sourceColor: string;
-  onSelect: (extend: boolean) => void;
-  onDelete: () => void;
-  onRotate: (angle: number) => void;
-  onMove: (direction: -1 | 1) => void;
-  onDragStart: () => void;
-  onDrop: () => void;
-  getRenderDocument: (sourceId: string) => Promise<PDFDocumentProxy>;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [previewState, setPreviewState] = useState<"loading" | "ready" | "error">(
-    item.kind === "blank" ? "ready" : "loading",
-  );
+async function renderPageToCanvas(page: Awaited<ReturnType<PDFDocumentProxy["getPage"]>>, scale: number, maxPixels: number) {
+  const base = page.getViewport({ scale: 1 });
+  const limitedScale = Math.min(scale, Math.sqrt(maxPixels / Math.max(1, base.width * base.height)));
+  const viewport = page.getViewport({ scale: Math.max(0.8, limitedScale) });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(viewport.width));
+  canvas.height = Math.max(1, Math.round(viewport.height));
+  const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+  if (!context) throw new Error("Không thể tạo vùng ảnh để nhận diện.");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvas, canvasContext: context, viewport }).promise;
+  return { canvas, viewport };
+}
+
+function canvasBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Không thể nén ảnh trang PDF.")), "image/jpeg", quality);
+  });
+}
+
+async function makeCleanBackground(canvas: HTMLCanvasElement, lines: Array<{ words?: Array<{ bbox: { x0: number; y0: number; x1: number; y1: number } }> }>, quality: number) {
+  const cleaned = document.createElement("canvas");
+  cleaned.width = canvas.width;
+  cleaned.height = canvas.height;
+  const context = cleaned.getContext("2d", { alpha: false });
+  if (!context) throw new Error("Không thể dựng nền trang Word.");
+  context.drawImage(canvas, 0, 0);
+  context.fillStyle = "#ffffff";
+  for (const line of lines) {
+    for (const word of line.words || []) {
+      const width = word.bbox.x1 - word.bbox.x0;
+      const height = word.bbox.y1 - word.bbox.y0;
+      const padX = Math.max(1, height * 0.06);
+      const padY = Math.max(1, height * 0.08);
+      context.fillRect(
+        Math.max(0, word.bbox.x0 - padX),
+        Math.max(0, word.bbox.y0 - padY),
+        Math.min(cleaned.width, width + padX * 2),
+        Math.min(cleaned.height, height + padY * 2),
+      );
+    }
+  }
+  return new Uint8Array(await (await canvasBlob(cleaned, quality)).arrayBuffer());
+}
+
+function visiblePages(total: number, current: number) {
+  if (total <= 80) return Array.from({ length: total }, (_, index) => index + 1);
+  const values = new Set([1, 2, total - 1, total]);
+  for (let page = Math.max(1, current - 14); page <= Math.min(total, current + 14); page += 1) values.add(page);
+  return [...values].sort((a, b) => a - b);
+}
+
+export default function Home() {
+  const [phase, setPhase] = useState<Phase>("empty");
+  const [documentFile, setDocumentFile] = useState<LoadedPdf | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageProgress, setPageProgress] = useState<Map<number, PageProgress>>(new Map());
+  const [selectedLanguages, setSelectedLanguages] = useState<string[]>(["vie", "eng"]);
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("precise");
+  const [ocrMode, setOcrMode] = useState<OcrMode>("smart");
+  const [pageRange, setPageRange] = useState("Tất cả");
+  const [fileName, setFileName] = useState("tai-lieu-ocr");
+  const [splitEvery, setSplitEvery] = useState(0);
+  const [preserveTables, setPreserveTables] = useState(true);
+  const [editableFormulas, setEditableFormulas] = useState(true);
+  const [largeDocumentMode, setLargeDocumentMode] = useState(true);
+  const [isDropActive, setIsDropActive] = useState(false);
+  const [processing, setProcessing] = useState({ done: 0, total: 0, page: 0, ocr: 0, elapsed: 0 });
+  const [result, setResult] = useState<ResultFile | null>(null);
+  const [toast, setToast] = useState<Toast>(null);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const previewWrapRef = useRef<HTMLDivElement>(null);
+  const previewTaskRef = useRef<RenderTask | null>(null);
+  const cancelRef = useRef(false);
+  const tesseractWorkerRef = useRef<Awaited<ReturnType<typeof import("tesseract.js")["createWorker"]>> | null>(null);
+  const outputUrlRef = useRef<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  const notify = useCallback((text: string, type: "success" | "error" = "success") => {
+    setToast({ text, type });
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 4200);
+  }, []);
+
+  const resetOutput = useCallback(() => {
+    if (outputUrlRef.current) URL.revokeObjectURL(outputUrlRef.current);
+    outputUrlRef.current = null;
+    setResult(null);
+  }, []);
+
+  const closeDocument = useCallback(() => {
+    cancelRef.current = true;
+    void tesseractWorkerRef.current?.terminate();
+    tesseractWorkerRef.current = null;
+    previewTaskRef.current?.cancel();
+    if (documentFile) {
+      void documentFile.pdf.destroy();
+      URL.revokeObjectURL(documentFile.url);
+    }
+    resetOutput();
+    setDocumentFile(null);
+    setPageProgress(new Map());
+    setCurrentPage(1);
+    setPhase("empty");
+    setErrorMessage("");
+  }, [documentFile, resetOutput]);
+
+  useEffect(() => () => {
+    previewTaskRef.current?.cancel();
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    if (outputUrlRef.current) URL.revokeObjectURL(outputUrlRef.current);
+    void tesseractWorkerRef.current?.terminate();
+  }, []);
 
   useEffect(() => {
-    if (item.kind === "blank") return;
+    if (!documentFile || !previewCanvasRef.current) return;
     let cancelled = false;
-    let renderTask: RenderTask | undefined;
+    const canvas = previewCanvasRef.current;
+    previewTaskRef.current?.cancel();
 
     async function renderPreview() {
-      setPreviewState("loading");
       try {
-        const document = await getRenderDocument(item.sourceId);
-        const page = await document.getPage(item.sourcePageIndex + 1);
-        if (cancelled || !canvasRef.current) return;
-
-        const rotation = ((page.rotate + item.rotation) % 360 + 360) % 360;
-        const naturalViewport = page.getViewport({ scale: 1, rotation });
-        const cssScale = Math.min(184 / naturalViewport.width, 238 / naturalViewport.height);
+        const page = await documentFile!.pdf.getPage(currentPage);
+        if (cancelled) return;
+        const base = page.getViewport({ scale: 1 });
+        const available = Math.max(320, Math.min(820, previewWrapRef.current?.clientWidth || 720) - 68);
+        const cssScale = Math.min(1.2, available / base.width);
         const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-        const renderViewport = page.getViewport({ scale: cssScale * pixelRatio, rotation });
-        const canvas = canvasRef.current;
-        canvas.width = Math.max(1, Math.floor(renderViewport.width));
-        canvas.height = Math.max(1, Math.floor(renderViewport.height));
-        canvas.style.width = `${Math.floor(renderViewport.width / pixelRatio)}px`;
-        canvas.style.height = `${Math.floor(renderViewport.height / pixelRatio)}px`;
+        const viewport = page.getViewport({ scale: cssScale * pixelRatio });
+        canvas.width = Math.max(1, Math.round(viewport.width));
+        canvas.height = Math.max(1, Math.round(viewport.height));
+        canvas.style.width = `${Math.round(viewport.width / pixelRatio)}px`;
+        canvas.style.height = `${Math.round(viewport.height / pixelRatio)}px`;
         const context = canvas.getContext("2d", { alpha: false });
-        if (!context) throw new Error("Không thể tạo bản xem trước.");
-        renderTask = page.render({ canvas, canvasContext: context, viewport: renderViewport });
-        await renderTask.promise;
-        if (!cancelled) setPreviewState("ready");
+        if (!context) return;
+        context.fillStyle = "white";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        previewTaskRef.current = page.render({ canvas, canvasContext: context, viewport });
+        await previewTaskRef.current.promise;
       } catch (error) {
         if (!cancelled && !(error instanceof Error && error.name === "RenderingCancelledException")) {
-          setPreviewState("error");
+          notify("Không thể hiển thị bản xem trước trang này.", "error");
         }
       }
     }
@@ -192,679 +258,452 @@ function PageThumbnail({
     void renderPreview();
     return () => {
       cancelled = true;
-      renderTask?.cancel();
+      previewTaskRef.current?.cancel();
     };
-  }, [getRenderDocument, item]);
+  }, [currentPage, documentFile, notify]);
 
-  const isLandscape = (item.rotation / 90) % 2 !== 0
-    ? item.height > item.width
-    : item.width > item.height;
-
-  return (
-    <article
-      className={`page-card ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""}`}
-      draggable
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move";
-        onDragStart();
-      }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        onDrop();
-      }}
-    >
-      <button
-        className="page-select-surface"
-        type="button"
-        aria-label={`Chọn trang ${index + 1}`}
-        aria-pressed={selected}
-        onClick={(event) => onSelect(event.shiftKey)}
-      >
-        <span className="selection-check" aria-hidden="true">
-          {selected ? <Check size={14} strokeWidth={3} /> : index + 1}
-        </span>
-        <span className="page-grip" aria-hidden="true"><GripVertical size={16} /></span>
-        <span
-          className={`page-paper ${isLandscape ? "is-landscape" : ""}`}
-          style={{ borderTopColor: sourceColor }}
-        >
-          {item.kind === "source" ? (
-            <>
-              <canvas ref={canvasRef} className={previewState === "ready" ? "is-ready" : ""} />
-              {previewState === "loading" && (
-                <span className="preview-loader"><LoaderCircle size={20} /></span>
-              )}
-              {previewState === "error" && <span className="preview-error">Không thể xem trước</span>}
-            </>
-          ) : (
-            <span className="blank-preview" style={{ background: item.background }}>
-              <Plus size={20} />
-              <small>Trang trắng</small>
-            </span>
-          )}
-        </span>
-      </button>
-
-      <div className="page-meta">
-        <div>
-          <strong>Trang {index + 1}</strong>
-          <span title={item.sourceName}>
-            {item.kind === "source" ? `${item.sourceName} · ${item.sourcePageIndex + 1}` : item.sourceName}
-          </span>
-        </div>
-        <div className="page-actions" aria-label={`Thao tác trang ${index + 1}`}>
-          <button type="button" onClick={() => onMove(-1)} title="Đưa sang trái" aria-label="Đưa sang trái">
-            <ChevronLeft size={15} />
-          </button>
-          <button type="button" onClick={() => onRotate(90)} title="Xoay phải" aria-label="Xoay phải">
-            <RotateCw size={15} />
-          </button>
-          <button type="button" onClick={onDelete} title="Xoá trang" aria-label="Xoá trang">
-            <Trash2 size={15} />
-          </button>
-          <button type="button" onClick={() => onMove(1)} title="Đưa sang phải" aria-label="Đưa sang phải">
-            <ChevronRight size={15} />
-          </button>
-        </div>
-      </div>
-    </article>
-  );
-}
-
-export default function Home() {
-  const [pages, setPages] = useState<ProjectPage[]>([]);
-  const [sources, setSources] = useState<Map<string, SourceFile>>(new Map());
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [fileName, setFileName] = useState(DEFAULT_FILE_NAME);
-  const [busyMessage, setBusyMessage] = useState("");
-  const [toast, setToast] = useState<Toast>(null);
-  const [historyState, setHistoryState] = useState({ undo: 0, redo: 0 });
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [isDropActive, setIsDropActive] = useState(false);
-  const [blankDialogOpen, setBlankDialogOpen] = useState(false);
-  const [blankFormat, setBlankFormat] = useState<keyof typeof PAGE_SIZES>("a4Portrait");
-  const [blankCount, setBlankCount] = useState(1);
-  const [blankBackground, setBlankBackground] = useState("#ffffff");
-  const [splitDialogOpen, setSplitDialogOpen] = useState(false);
-  const [splitMode, setSplitMode] = useState<"every" | "ranges">("every");
-  const [splitExpression, setSplitExpression] = useState("");
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const pagesRef = useRef<ProjectPage[]>([]);
-  const sourcesRef = useRef<Map<string, SourceFile>>(new Map());
-  const renderDocumentsRef = useRef<Map<string, Promise<PDFDocumentProxy>>>(new Map());
-  const historyRef = useRef<ProjectPage[][]>([]);
-  const futureRef = useRef<ProjectPage[][]>([]);
-  const lastSelectedIndexRef = useRef<number | null>(null);
-  const toastTimerRef = useRef<number | null>(null);
-
-  const selectedCount = selectedIds.size;
-  const usedSourceIds = new Set(pages.filter((page): page is SourcePage => page.kind === "source").map((page) => page.sourceId));
-  const sourceFiles = Array.from(sources.values()).filter((source) => usedSourceIds.has(source.id));
-  const sourceCount = sourceFiles.length;
-  const totalSize = sourceFiles.reduce((sum, file) => sum + file.size, 0);
-
-  const notify = useCallback((message: string, type: "success" | "error" = "success") => {
-    setToast({ message, type });
-    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 3600);
-  }, []);
-
-  const commitPages = useCallback((nextPages: ProjectPage[]) => {
-    if (nextPages === pagesRef.current) return;
-    historyRef.current.push(pagesRef.current);
-    if (historyRef.current.length > 50) historyRef.current.shift();
-    futureRef.current = [];
-    pagesRef.current = nextPages;
-    setPages(nextPages);
-    setHistoryState({ undo: historyRef.current.length, redo: 0 });
-  }, []);
-
-  const getRenderDocument = useCallback((sourceId: string) => {
-    const cached = renderDocumentsRef.current.get(sourceId);
-    if (cached) return cached;
-    const source = sourcesRef.current.get(sourceId);
-    if (!source) return Promise.reject(new Error("Không tìm thấy PDF nguồn."));
-    const promise = getPdfJs().then((pdfjs) => pdfjs.getDocument({ data: source.bytes.slice() }).promise);
-    renderDocumentsRef.current.set(sourceId, promise);
-    return promise;
-  }, []);
-
-  const undo = useCallback(() => {
-    const previous = historyRef.current.pop();
-    if (!previous) return;
-    futureRef.current.push(pagesRef.current);
-    pagesRef.current = previous;
-    setPages(previous);
-    setSelectedIds(new Set());
-    setHistoryState({ undo: historyRef.current.length, redo: futureRef.current.length });
-  }, []);
-
-  const redo = useCallback(() => {
-    const next = futureRef.current.pop();
-    if (!next) return;
-    historyRef.current.push(pagesRef.current);
-    pagesRef.current = next;
-    setPages(next);
-    setSelectedIds(new Set());
-    setHistoryState({ undo: historyRef.current.length, redo: futureRef.current.length });
-  }, []);
-
-  const deletePages = useCallback((ids: Set<string>) => {
-    if (!ids.size) return;
-    const next = pagesRef.current.filter((page) => !ids.has(page.id));
-    commitPages(next);
-    setSelectedIds(new Set());
-    lastSelectedIndexRef.current = null;
-    notify(`Đã xoá ${ids.size} trang.`);
-  }, [commitPages, notify]);
-
-  const rotatePages = useCallback((ids: Set<string>, angle: number) => {
-    if (!ids.size) return;
-    commitPages(pagesRef.current.map((page) => ids.has(page.id)
-      ? { ...page, rotation: (page.rotation + angle + 360) % 360 }
-      : page));
-  }, [commitPages]);
-
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      const isTyping = target?.matches("input, textarea, select, [contenteditable='true']");
-      if (event.key === "Escape") {
-        setBlankDialogOpen(false);
-        setSplitDialogOpen(false);
-        setSelectedIds(new Set());
-        return;
-      }
-      if (isTyping) return;
-      const command = event.ctrlKey || event.metaKey;
-      if (command && event.key.toLowerCase() === "a" && pagesRef.current.length) {
-        event.preventDefault();
-        setSelectedIds(new Set(pagesRef.current.map((page) => page.id)));
-      } else if (command && event.key.toLowerCase() === "z") {
-        event.preventDefault();
-        if (event.shiftKey) redo(); else undo();
-      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedIds.size) {
-        event.preventDefault();
-        deletePages(selectedIds);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deletePages, redo, selectedIds, undo]);
-
-  useEffect(() => () => {
-    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-  }, []);
-
-  async function addFiles(fileList: FileList | File[]) {
-    const files = Array.from(fileList).filter((file) =>
-      file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"),
-    );
-    if (!files.length) {
-      notify("Vui lòng chọn file PDF hợp lệ.", "error");
+  async function loadPdf(file: File) {
+    if (!(file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))) {
+      notify("Vui lòng chọn đúng file PDF.", "error");
       return;
     }
+    if (phase === "processing") return;
 
-    setBusyMessage(files.length > 1 ? `Đang đọc ${files.length} file PDF…` : `Đang đọc ${files[0].name}…`);
-    const importedPages: ProjectPage[] = [];
-    const errors: string[] = [];
+    if (documentFile) {
+      void documentFile.pdf.destroy();
+      URL.revokeObjectURL(documentFile.url);
+    }
+    resetOutput();
+    setPhase("loading");
+    setErrorMessage("");
+    setPageProgress(new Map());
+    const url = URL.createObjectURL(file);
 
     try {
-      for (const file of files) {
-        try {
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          const document = await PDFDocument.load(bytes, { updateMetadata: false });
-          const sourceId = makeId("source");
-          const pageCount = document.getPageCount();
-          const color = SOURCE_COLORS[sourcesRef.current.size % SOURCE_COLORS.length];
-          sourcesRef.current.set(sourceId, {
-            id: sourceId,
-            name: file.name,
-            size: file.size,
-            bytes,
-            pageCount,
-            color,
-          });
-
-          document.getPages().forEach((page, sourcePageIndex) => {
-            const { width, height } = page.getSize();
-            importedPages.push({
-              id: makeId("page"),
-              kind: "source",
-              sourceId,
-              sourceName: file.name,
-              sourcePageIndex,
-              width,
-              height,
-              rotation: 0,
-            });
-          });
-        } catch {
-          errors.push(file.name);
-        }
-      }
-
-      if (importedPages.length) {
-        setSources(new Map(sourcesRef.current));
-        commitPages([...pagesRef.current, ...importedPages]);
-        if (fileName === DEFAULT_FILE_NAME && files[0]) {
-          setFileName(files[0].name.replace(/\.pdf$/i, "") || DEFAULT_FILE_NAME);
-        }
-        notify(`Đã thêm ${importedPages.length} trang từ ${files.length - errors.length} file.`);
-      }
-      if (errors.length) {
-        notify(`Không thể mở: ${errors.join(", ")}. File có thể bị khoá hoặc hỏng.`, "error");
-      }
+      const pdfjs = await getPdfJs();
+      const pdf = await pdfjs.getDocument({ url, cMapPacked: true, useWorkerFetch: true }).promise;
+      const loaded = { file, url, pdf, pageCount: pdf.numPages };
+      setDocumentFile(loaded);
+      setCurrentPage(1);
+      setPageRange("Tất cả");
+      setFileName(safeWordFileName(file.name));
+      setSplitEvery(pdf.numPages > 500 ? 200 : 0);
+      setPageProgress(new Map(Array.from({ length: pdf.numPages }, (_, index) => [index + 1, { state: "waiting" as PageState }])));
+      setPhase("ready");
+      notify(`Đã đọc ${pdf.numPages.toLocaleString("vi-VN")} trang PDF.`);
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      setPhase("empty");
+      const message = error instanceof Error && /password/i.test(error.message)
+        ? "PDF đang có mật khẩu. Hãy mở khóa file rồi thử lại."
+        : "Không thể mở PDF. File có thể bị hỏng hoặc dùng định dạng không được hỗ trợ.";
+      setErrorMessage(message);
+      notify(message, "error");
     } finally {
-      setBusyMessage("");
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
-  function selectPage(id: string, index: number, extend: boolean) {
-    setSelectedIds((current) => {
-      if (extend && lastSelectedIndexRef.current !== null) {
-        const start = Math.min(lastSelectedIndexRef.current, index);
-        const end = Math.max(lastSelectedIndexRef.current, index);
-        return new Set(pages.slice(start, end + 1).map((page) => page.id));
+  function toggleLanguage(code: string) {
+    setSelectedLanguages((current) => {
+      if (current.includes(code)) {
+        if (current.length === 1) {
+          notify("Cần giữ ít nhất một ngôn ngữ nhận diện.", "error");
+          return current;
+        }
+        return current.filter((item) => item !== code);
       }
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      lastSelectedIndexRef.current = index;
-      return next;
+      if (current.length >= 4) {
+        notify("Chọn tối đa 4 ngôn ngữ để tốc độ và độ chính xác ổn định.", "error");
+        return current;
+      }
+      return [...current, code];
     });
   }
 
-  function movePage(id: string, direction: -1 | 1) {
-    const from = pagesRef.current.findIndex((page) => page.id === id);
-    const to = from + direction;
-    if (from < 0 || to < 0 || to >= pagesRef.current.length) return;
-    const next = [...pagesRef.current];
-    [next[from], next[to]] = [next[to], next[from]];
-    commitPages(next);
-  }
-
-  function dropPage(targetId: string) {
-    if (!draggingId || draggingId === targetId) {
-      setDraggingId(null);
+  async function startConversion() {
+    if (!documentFile || phase === "processing") return;
+    let pages: number[];
+    try {
+      pages = parsePageRange(pageRange, documentFile.pageCount);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Khoảng trang không hợp lệ.", "error");
       return;
     }
-    const next = [...pagesRef.current];
-    const from = next.findIndex((page) => page.id === draggingId);
-    const to = next.findIndex((page) => page.id === targetId);
-    if (from >= 0 && to >= 0) {
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      commitPages(next);
+    if (!selectedLanguages.length) {
+      notify("Hãy chọn ít nhất một ngôn ngữ OCR.", "error");
+      return;
     }
-    setDraggingId(null);
-  }
 
-  function addBlankPages() {
-    const format = PAGE_SIZES[blankFormat];
-    const count = Math.min(50, Math.max(1, Number(blankCount) || 1));
-    const newPages: BlankPage[] = Array.from({ length: count }, () => ({
-      id: makeId("blank"),
-      kind: "blank",
-      sourceName: format.label,
-      width: format.width,
-      height: format.height,
-      background: blankBackground,
-      rotation: 0,
-    }));
-    const selectedIndices = pagesRef.current
-      .map((page, index) => selectedIds.has(page.id) ? index : -1)
-      .filter((index) => index >= 0);
-    const insertAt = selectedIndices.length ? Math.max(...selectedIndices) + 1 : pagesRef.current.length;
-    const next = [...pagesRef.current];
-    next.splice(insertAt, 0, ...newPages);
-    commitPages(next);
-    setBlankDialogOpen(false);
-    notify(`Đã thêm ${count} trang ${format.label}.`);
-  }
+    cancelRef.current = false;
+    resetOutput();
+    setPhase("processing");
+    setErrorMessage("");
+    setProcessing({ done: 0, total: pages.length, page: pages[0], ocr: 0, elapsed: 0 });
+    setPageProgress((current) => {
+      const next = new Map(current);
+      pages.forEach((page) => next.set(page, { state: "waiting" }));
+      return next;
+    });
 
-  async function exportMergedPdf() {
-    if (!pagesRef.current.length) return;
-    setBusyMessage("Đang tạo file PDF hoàn chỉnh…");
-    try {
-      const outputName = safeFileName(fileName);
-      const bytes = await buildPdf(pagesRef.current, sourcesRef.current, { title: fileName });
-      downloadBytes(bytes, `${outputName}.pdf`, "application/pdf");
-      notify(`Đã xuất ${pagesRef.current.length} trang thành ${outputName}.pdf.`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Không thể xuất PDF.", "error");
-    } finally {
-      setBusyMessage("");
-    }
-  }
+    const startedAt = performance.now();
+    const pageModels: Array<Record<string, unknown>> = [];
+    let activePage = pages[0];
 
-  async function exportSplitPdf() {
-    setBusyMessage("Đang đóng gói các file PDF…");
-    try {
-      const groups = splitMode === "every"
-        ? pagesRef.current.map((_, index) => [index])
-        : parseSplitRanges(splitExpression, pagesRef.current.length);
-      const outputName = safeFileName(fileName);
-      const bytes = await splitPdfToZip(pagesRef.current, sourcesRef.current, groups, {
-        baseName: outputName,
-        title: fileName,
+    const ensureOcrWorker = async () => {
+      if (tesseractWorkerRef.current) return tesseractWorkerRef.current;
+      const tesseract = await import("tesseract.js");
+      const worker = await tesseract.createWorker(selectedLanguages.join("+"), tesseract.OEM.LSTM_ONLY, {
+        logger: (message) => {
+          if (message.status === "recognizing text") {
+            setProcessing((current) => ({ ...current, page: activePage, ocr: Math.round((message.progress || 0) * 100) }));
+          }
+        },
       });
-      downloadBytes(bytes, `${outputName}-da-tach.zip`, "application/zip");
-      setSplitDialogOpen(false);
-      notify(`Đã tách thành ${groups.length} file PDF trong một gói ZIP.`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Không thể tách PDF.", "error");
-    } finally {
-      setBusyMessage("");
-    }
-  }
+      await worker.setParameters({
+        tessedit_pageseg_mode: tesseract.PSM.AUTO,
+        preserve_interword_spaces: "1",
+        user_defined_dpi: "300",
+      });
+      tesseractWorkerRef.current = worker;
+      return worker;
+    };
 
-  function clearProject() {
-    if (!window.confirm("Xoá toàn bộ tài liệu khỏi vùng làm việc? File gốc trên máy sẽ không bị ảnh hưởng.")) return;
-    for (const documentPromise of renderDocumentsRef.current.values()) {
-      void documentPromise.then((document) => document.destroy()).catch(() => undefined);
-    }
-    renderDocumentsRef.current.clear();
-    sourcesRef.current.clear();
-    setSources(new Map());
-    historyRef.current = [];
-    futureRef.current = [];
-    pagesRef.current = [];
-    setPages([]);
-    setSelectedIds(new Set());
-    setFileName(DEFAULT_FILE_NAME);
-    setHistoryState({ undo: 0, redo: 0 });
-  }
-
-  const rangePreview = useMemo(() => {
-    if (splitMode === "every") return pages.length ? `${pages.length} file PDF` : "0 file PDF";
     try {
-      return `${parseSplitRanges(splitExpression, pages.length).length} file PDF`;
-    } catch {
-      return "Kiểm tra lại khoảng trang";
-    }
-  }, [pages.length, splitExpression, splitMode]);
+      for (let index = 0; index < pages.length; index += 1) {
+        if (cancelRef.current) break;
+        const pageNumber = pages[index];
+        activePage = pageNumber;
+        setCurrentPage(pageNumber);
+        setProcessing((current) => ({ ...current, page: pageNumber, ocr: 0 }));
 
-  const hasHistory = historyState.undo > 0;
-  const hasFuture = historyState.redo > 0;
+        const page = await documentFile.pdf.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+        const nativeCharacterCount = textContent.items.reduce((total, item) => total + ("str" in item ? item.str.trim().length : 0), 0);
+        const useNativeText = ocrMode === "text" || (ocrMode === "smart" && nativeCharacterCount >= 36);
+        const isLarge = largeDocumentMode && pages.length >= 100;
+        const targetScale = layoutMode === "precise" ? 2.05 : layoutMode === "balanced" ? 1.75 : 1.45;
+        const maxPixels = isLarge ? 3_600_000 : layoutMode === "precise" ? 7_200_000 : 5_200_000;
+        const needsBackground = layoutMode === "precise" || (!useNativeText && layoutMode === "balanced");
+        let rendered: Awaited<ReturnType<typeof renderPageToCanvas>> | null = null;
+        let lines: ReturnType<typeof groupPdfTextItems>;
+        let confidence = 99;
+        let method: "text" | "ocr" = "text";
+
+        setPageProgress((current) => new Map(current).set(pageNumber, { state: useNativeText ? "text" : "ocr" }));
+
+        if (useNativeText) {
+          const viewport = page.getViewport({ scale: Math.max(1.2, Math.min(targetScale, 1.75)) });
+          lines = groupPdfTextItems(textContent.items, viewport);
+          if (needsBackground) rendered = await renderPageToCanvas(page, viewport.scale, maxPixels);
+          if (rendered && Math.abs(rendered.viewport.scale - viewport.scale) > 0.01) {
+            lines = groupPdfTextItems(textContent.items, rendered.viewport);
+          }
+        } else {
+          method = "ocr";
+          rendered = await renderPageToCanvas(page, targetScale, maxPixels);
+          const worker = await ensureOcrWorker();
+          const recognized = await worker.recognize(rendered.canvas, { rotateAuto: true }, { text: true, blocks: true });
+          lines = flattenTesseractLines(recognized.data);
+          confidence = Number(recognized.data.confidence || 0);
+        }
+
+        if (cancelRef.current) break;
+        const viewport = rendered?.viewport || page.getViewport({ scale: Math.max(1.2, Math.min(targetScale, 1.75)) });
+        const blocks = preserveTables ? analyzeLayout(lines) : lines.map((line) => ({ type: "line", line, bbox: line.bbox }));
+        let background: Uint8Array | undefined;
+        if (needsBackground) {
+          if (!rendered) rendered = await renderPageToCanvas(page, targetScale, maxPixels);
+          const jpegQuality = isLarge ? 0.56 : layoutMode === "precise" ? 0.68 : 0.61;
+          background = await makeCleanBackground(rendered.canvas, lines, jpegQuality);
+        }
+
+        const model = {
+          pageNumber,
+          pageWidthPt: page.view[2] - page.view[0],
+          pageHeightPt: page.view[3] - page.view[1],
+          pixelWidth: viewport.width,
+          pixelHeight: viewport.height,
+          precise: layoutMode !== "flow",
+          method,
+          confidence,
+          lines,
+          blocks,
+          background,
+        };
+        pageModels.push(model);
+        const tables = blocks.filter((block) => block.type === "table").length;
+        const formulas = editableFormulas ? lines.filter((line) => isFormulaText(line.text)).length : 0;
+        setPageProgress((current) => new Map(current).set(pageNumber, { state: "done", confidence, tables, formulas }));
+        const elapsed = (performance.now() - startedAt) / 1000;
+        setProcessing({ done: index + 1, total: pages.length, page: pageNumber, ocr: 100, elapsed });
+        rendered = null;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      }
+
+      if (cancelRef.current) {
+        setPhase("ready");
+        notify("Đã dừng. Các thay đổi chưa được xuất.", "error");
+        return;
+      }
+
+      setProcessing((current) => ({ ...current, done: pages.length, ocr: 100 }));
+      const output = await createWordOutput(pageModels, {
+        fileName,
+        title: safeWordFileName(fileName),
+        splitEvery,
+        formulas: editableFormulas,
+        font: "Arial",
+      });
+      const url = URL.createObjectURL(output.blob);
+      outputUrlRef.current = url;
+      const summary = summarizePages(pageModels);
+      setResult({ url, blob: output.blob, fileName: output.fileName, partCount: output.partCount, summary });
+      setPhase("done");
+      notify("Word đã sẵn sàng để tải xuống.");
+    } catch (error) {
+      if (cancelRef.current) {
+        setPhase("ready");
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Không thể hoàn tất nhận diện.";
+      setErrorMessage(message);
+      setPhase("error");
+      notify(message, "error");
+      setPageProgress((current) => new Map(current).set(activePage, { state: "error" }));
+    } finally {
+      await tesseractWorkerRef.current?.terminate();
+      tesseractWorkerRef.current = null;
+    }
+  }
+
+  function cancelConversion() {
+    cancelRef.current = true;
+    void tesseractWorkerRef.current?.terminate();
+    tesseractWorkerRef.current = null;
+  }
+
+  const progressPercent = processing.total ? Math.round((processing.done / processing.total) * 100) : 0;
+  const remainingSeconds = processing.done > 0
+    ? (processing.elapsed / processing.done) * (processing.total - processing.done)
+    : 0;
+  const pageNumbers = useMemo(
+    () => documentFile ? visiblePages(documentFile.pageCount, currentPage) : [],
+    [currentPage, documentFile],
+  );
 
   return (
-    <div className="app-frame">
+    <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#top" aria-label="PDF Gọn - trang chủ">
-          <span className="brand-mark" aria-hidden="true"><Files size={21} /></span>
-          <span><strong>PDF Gọn</strong><small>Chỉnh PDF ngay trên máy</small></span>
-        </a>
-        <div className="privacy-pill"><LockKeyhole size={14} /> File không rời khỏi thiết bị</div>
-        <a className="help-link" href="#huong-dan">Hướng dẫn</a>
+        <button className="brand" type="button" onClick={() => documentFile ? closeDocument() : window.scrollTo({ top: 0, behavior: "smooth" })}>
+          <span className="brand-mark"><ScanText size={22} strokeWidth={2.2} /></span>
+          <span><strong>VietOCR</strong><small>PDF → Word Studio</small></span>
+        </button>
+        <div className="topbar-center"><LockKeyhole size={13} /> Xử lý cục bộ · File không rời thiết bị</div>
+        <a className="topbar-help" href="#cach-hoat-dong">Cách hoạt động</a>
       </header>
 
-      <main id="top" className={pages.length ? "workspace" : "welcome-workspace"}>
-        {!pages.length ? (
-          <section className="welcome-panel">
-            <div className="welcome-copy">
-              <span className="eyebrow"><SparklesIcon /> Miễn phí · Không cần đăng nhập</span>
-              <h1>Chỉnh PDF gọn gàng,<br />ngay trong trình duyệt.</h1>
-              <p>Gộp nhiều file, tách theo khoảng, thêm trang, xoá hoặc sắp xếp lại — nhanh và riêng tư.</p>
-              <div className="trust-row">
-                <span><ShieldCheck size={17} /> Xử lý cục bộ</span>
-                <span><Archive size={17} /> Không lưu file</span>
-                <span><Layers3 size={17} /> Không giới hạn trang</span>
+      {phase === "empty" || phase === "loading" ? (
+        <main className="landing">
+          <section className="hero">
+            <div className="hero-copy">
+              <div className="eyebrow"><Sparkles size={15} /> OCR chuyên cho tài liệu có cấu trúc</div>
+              <h1>Biến PDF thành Word <em>thật sự</em> chỉnh sửa được.</h1>
+              <p>Nhận diện tiếng Việt và đa ngôn ngữ, dựng lại bảng biểu, giữ bố cục trang và chuyển công thức sang Equation của Word.</p>
+              <div className="feature-row">
+                <span><Table2 size={16} /> Bảng Word thật</span>
+                <span><Sigma size={16} /> Công thức OMML</span>
+                <span><Layers3 size={16} /> Hàng trăm trang</span>
               </div>
+              <div className="quality-note"><ShieldCheck size={18} /><div><strong>Ưu tiên tiếng Việt có dấu</strong><small>Tự dùng lớp text sẵn có; chỉ OCR những trang dạng ảnh để tăng độ chính xác.</small></div></div>
             </div>
+
             <div
-              className={`hero-dropzone ${isDropActive ? "is-active" : ""}`}
+              className={`upload-card ${isDropActive ? "is-active" : ""}`}
               onDragEnter={(event) => { event.preventDefault(); setIsDropActive(true); }}
               onDragOver={(event) => event.preventDefault()}
-              onDragLeave={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDropActive(false);
-              }}
+              onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDropActive(false); }}
               onDrop={(event) => {
                 event.preventDefault();
                 setIsDropActive(false);
-                void addFiles(event.dataTransfer.files);
+                if (event.dataTransfer.files[0]) void loadPdf(event.dataTransfer.files[0]);
               }}
             >
-              <span className="upload-illustration"><UploadCloud size={30} /></span>
-              <h2>Thả PDF vào đây</h2>
-              <p>Kéo một hoặc nhiều file để bắt đầu</p>
-              <button className="primary-button large" type="button" onClick={() => fileInputRef.current?.click()}>
-                <Plus size={18} /> Chọn file PDF
+              <div className="upload-grid" aria-hidden="true" />
+              <div className="upload-icon">{phase === "loading" ? <LoaderCircle className="spin" size={29} /> : <UploadCloud size={29} />}</div>
+              <h2>{phase === "loading" ? "Đang đọc cấu trúc PDF…" : "Thả PDF vào đây"}</h2>
+              <p>{phase === "loading" ? "Vui lòng giữ trang này mở" : "hoặc chọn file từ máy tính"}</p>
+              <button className="primary-button large" type="button" disabled={phase === "loading"} onClick={() => fileInputRef.current?.click()}>
+                <FileText size={18} /> Chọn file PDF
               </button>
-              <small>Hỗ trợ nhiều file · PDF được xử lý trên thiết bị của bạn</small>
+              <div className="upload-limits"><span>PDF ảnh & PDF text</span><i /> <span>Không giới hạn số trang</span></div>
             </div>
           </section>
-        ) : (
-          <div className="editor-layout">
-            <section className="editor-panel">
-              <div className="editor-toolbar">
-                <div className="toolbar-group">
-                  <button className="tool-button emphasis" type="button" onClick={() => fileInputRef.current?.click()}>
-                    <FilePlus2 size={17} /> Thêm PDF
-                  </button>
-                  <button className="tool-button" type="button" onClick={() => setBlankDialogOpen(true)}>
-                    <Plus size={17} /> Trang mới
-                  </button>
+
+          <section className="capability-strip" id="cach-hoat-dong">
+            <article><span>01</span><div><strong>Phân loại từng trang</strong><p>Trang có text được lấy trực tiếp; trang scan mới chạy OCR.</p></div></article>
+            <article><span>02</span><div><strong>Dựng cấu trúc</strong><p>Hàng, cột, đoạn văn và công thức được tạo thành đối tượng Word.</p></div></article>
+            <article><span>03</span><div><strong>Xuất an toàn</strong><p>Xử lý lần lượt từng trang, có thể chia Word cho hồ sơ rất lớn.</p></div></article>
+          </section>
+          {errorMessage && <div className="landing-error"><AlertTriangle size={18} />{errorMessage}</div>}
+        </main>
+      ) : (
+        <main className="studio">
+          <section className="document-bar">
+            <div className="document-identity">
+              <span className="pdf-badge">PDF</span>
+              <div><strong title={documentFile?.file.name}>{documentFile?.file.name}</strong><small>{documentFile?.pageCount.toLocaleString("vi-VN")} trang · {formatBytes(documentFile?.file.size || 0)}</small></div>
+            </div>
+            <div className="document-status"><span className={`status-dot ${phase}`} />{phase === "processing" ? `Đang xử lý trang ${processing.page}` : phase === "done" ? "Đã chuyển đổi xong" : phase === "error" ? "Cần kiểm tra" : "Sẵn sàng chuyển đổi"}</div>
+            <button className="replace-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={phase === "processing"}><RefreshCw size={15} /> Đổi file</button>
+            <button className="close-document" type="button" onClick={closeDocument} disabled={phase === "processing"} aria-label="Đóng tài liệu"><X size={17} /></button>
+          </section>
+
+          <div className="studio-grid">
+            <aside className="page-sidebar">
+              <div className="panel-kicker"><Layers3 size={14} /> Trang tài liệu <b>{documentFile?.pageCount}</b></div>
+              <div className="page-list">
+                {pageNumbers.map((page, index) => {
+                  const previous = pageNumbers[index - 1];
+                  const info = pageProgress.get(page);
+                  return (
+                    <div key={page} className="page-list-unit">
+                      {previous && page - previous > 1 && <span className="page-gap">•••</span>}
+                      <button className={`page-row ${currentPage === page ? "is-current" : ""}`} type="button" onClick={() => setCurrentPage(page)}>
+                        <span className={`page-state ${info?.state || "waiting"}`}>{info?.state === "done" ? <Check size={11} strokeWidth={3} /> : page}</span>
+                        <span><strong>Trang {page}</strong><small>{info?.state === "ocr" ? "Đang OCR…" : info?.state === "text" ? "Đọc lớp text…" : info?.state === "done" ? `${Math.round(info.confidence || 0)}% · ${info.tables || 0} bảng` : info?.state === "error" ? "Có lỗi" : "Chờ xử lý"}</small></span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="sidebar-legend"><span><i className="native" /> Text gốc</span><span><i className="ocr" /> OCR ảnh</span></div>
+            </aside>
+
+            <section className="preview-panel" ref={previewWrapRef}>
+              <div className="preview-toolbar">
+                <div><Eye size={16} /><strong>Bản gốc</strong><span>Trang {currentPage}/{documentFile?.pageCount}</span></div>
+                <div className="page-nav">
+                  <button type="button" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} aria-label="Trang trước"><ChevronLeft size={17} /></button>
+                  <label><span>Trang</span><input value={currentPage} type="number" min="1" max={documentFile?.pageCount} onChange={(event) => setCurrentPage(Math.min(documentFile?.pageCount || 1, Math.max(1, Number(event.target.value) || 1)))} /></label>
+                  <button type="button" disabled={currentPage >= (documentFile?.pageCount || 1)} onClick={() => setCurrentPage((page) => Math.min(documentFile?.pageCount || 1, page + 1))} aria-label="Trang sau"><ChevronRight size={17} /></button>
                 </div>
-                <span className="toolbar-divider" />
-                <div className="toolbar-group compact">
-                  <button className="icon-tool" type="button" onClick={undo} disabled={!hasHistory} title="Hoàn tác (Ctrl+Z)" aria-label="Hoàn tác">
-                    <Undo2 size={17} />
-                  </button>
-                  <button className="icon-tool" type="button" onClick={redo} disabled={!hasFuture} title="Làm lại (Ctrl+Shift+Z)" aria-label="Làm lại">
-                    <Redo2 size={17} />
-                  </button>
-                </div>
-                <span className="toolbar-divider hide-mobile" />
-                <div className="toolbar-group selection-tools">
-                  <button className="tool-button subtle" type="button" onClick={() => setSelectedIds(new Set(pages.map((page) => page.id)))}>
-                    Chọn tất cả
-                  </button>
-                  {selectedCount > 0 && (
-                    <>
-                      <button className="icon-tool" type="button" onClick={() => rotatePages(selectedIds, -90)} title="Xoay trái" aria-label="Xoay trang đã chọn sang trái">
-                        <RotateCcw size={17} />
-                      </button>
-                      <button className="icon-tool" type="button" onClick={() => rotatePages(selectedIds, 90)} title="Xoay phải" aria-label="Xoay trang đã chọn sang phải">
-                        <RotateCw size={17} />
-                      </button>
-                      <button className="icon-tool danger" type="button" onClick={() => deletePages(selectedIds)} title="Xoá trang đã chọn" aria-label="Xoá trang đã chọn">
-                        <Trash2 size={17} />
-                      </button>
-                    </>
+              </div>
+              <div className="preview-stage">
+                <div className="paper-wrap">
+                  <canvas ref={previewCanvasRef} />
+                  {pageProgress.get(currentPage)?.state === "done" && (
+                    <div className="recognized-badge"><CheckCircle2 size={14} /> Đã nhận diện · {Math.round(pageProgress.get(currentPage)?.confidence || 0)}%</div>
+                  )}
+                  {phase === "processing" && processing.page === currentPage && (
+                    <div className="scan-line" aria-hidden="true" />
                   )}
                 </div>
-                <div className="page-counter">
-                  {selectedCount ? <strong>{selectedCount} đã chọn</strong> : <span>Giữ Shift để chọn một dải</span>}
-                  <b>{pages.length} trang</b>
-                </div>
               </div>
-
-              <div
-                className={`page-canvas ${isDropActive ? "is-drop-active" : ""}`}
-                onDragEnter={(event) => {
-                  if (event.dataTransfer.types.includes("Files")) setIsDropActive(true);
-                }}
-                onDragOver={(event) => {
-                  if (event.dataTransfer.types.includes("Files")) event.preventDefault();
-                }}
-                onDragLeave={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDropActive(false);
-                }}
-                onDrop={(event) => {
-                  if (event.dataTransfer.files.length) {
-                    event.preventDefault();
-                    setIsDropActive(false);
-                    void addFiles(event.dataTransfer.files);
-                  }
-                }}
-              >
-                {isDropActive && (
-                  <div className="drop-overlay"><UploadCloud size={30} /><strong>Thả để thêm PDF</strong></div>
-                )}
-                <div className="page-grid">
-                  {pages.map((page, index) => {
-                    const sourceColor = page.kind === "source"
-                      ? sources.get(page.sourceId)?.color || "#2d6a5a"
-                      : "#bdc5bf";
-                    return (
-                      <PageThumbnail
-                        key={page.id}
-                        item={page}
-                        index={index}
-                        selected={selectedIds.has(page.id)}
-                        dragging={draggingId === page.id}
-                        sourceColor={sourceColor}
-                        onSelect={(extend) => selectPage(page.id, index, extend)}
-                        onDelete={() => deletePages(new Set([page.id]))}
-                        onRotate={(angle) => rotatePages(new Set([page.id]), angle)}
-                        onMove={(direction) => movePage(page.id, direction)}
-                        onDragStart={() => setDraggingId(page.id)}
-                        onDrop={() => dropPage(page.id)}
-                        getRenderDocument={getRenderDocument}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
+              <div className="preview-foot"><ShieldCheck size={14} /> Bản xem trước được tạo trên thiết bị của bạn.</div>
             </section>
 
-            <aside className="export-panel">
-              <div className="export-heading">
-                <span className="export-icon"><Download size={19} /></span>
-                <div><h2>Xuất tài liệu</h2><p>Sẵn sàng khi bạn hoàn tất.</p></div>
-              </div>
+            <aside className="settings-panel">
+              <div className="settings-heading"><span><Settings2 size={18} /></span><div><h2>Thiết lập xuất Word</h2><p>Cấu hình nhận diện và bố cục</p></div></div>
 
-              <div className="document-summary">
-                <div><span>Trang</span><strong>{pages.length}</strong></div>
-                <div><span>File nguồn</span><strong>{sourceCount}</strong></div>
-                <div><span>Dung lượng gốc</span><strong>{formatBytes(totalSize)}</strong></div>
-              </div>
-
-              <label className="field-label" htmlFor="output-name">Tên file kết quả</label>
-              <div className="file-name-field">
-                <input id="output-name" value={fileName} onChange={(event) => setFileName(event.target.value)} spellCheck="false" />
-                <span>.pdf</span>
-              </div>
-
-              <button className="primary-button export-button" type="button" onClick={() => void exportMergedPdf()}>
-                <Download size={18} /> Tải PDF đã gộp
-              </button>
-              <button
-                className="secondary-button split-button"
-                type="button"
-                onClick={() => {
-                  setSplitExpression(pages.length ? `1-${pages.length}` : "");
-                  setSplitDialogOpen(true);
-                }}
-              >
-                <Scissors size={17} /> Tách thành nhiều PDF
-              </button>
-
-              <div className="privacy-card">
-                <ShieldCheck size={20} />
-                <div><strong>Riêng tư theo thiết kế</strong><p>Không có file nào được gửi lên máy chủ. Đóng tab là dữ liệu biến mất.</p></div>
-              </div>
-
-              <div className="source-list">
-                <div className="source-list-title"><span>File đang dùng</span><button type="button" onClick={clearProject}>Xoá tất cả</button></div>
-                {sourceFiles.map((source) => (
-                  <div className="source-item" key={source.id}>
-                    <span className="source-dot" style={{ background: source.color }} />
-                    <div><strong title={source.name}>{source.name}</strong><small>{source.pageCount} trang · {formatBytes(source.size)}</small></div>
+              {phase === "done" && result ? (
+                <div className="result-card">
+                  <div className="result-check"><FileCheck2 size={28} /></div>
+                  <h3>Word đã sẵn sàng</h3>
+                  <p>{result.partCount > 1 ? `${result.partCount} tệp Word được đóng trong ZIP` : "Một tệp Word có thể chỉnh sửa"} · {formatBytes(result.blob.size)}</p>
+                  <div className="result-stats">
+                    <div><strong>{result.summary.pages}</strong><span>trang</span></div>
+                    <div><strong>{result.summary.tables}</strong><span>bảng</span></div>
+                    <div><strong>{result.summary.formulas}</strong><span>công thức</span></div>
                   </div>
-                ))}
-                {pages.some((page) => page.kind === "blank") && (
-                  <div className="source-item"><span className="source-dot blank" /><div><strong>Trang tạo mới</strong><small>Được thêm trong PDF Gọn</small></div></div>
-                )}
-              </div>
+                  <button className="download-button" type="button" onClick={() => downloadResult(result)}><Download size={18} /> Tải {result.fileName.endsWith(".zip") ? "gói Word" : "file Word"}</button>
+                  <button className="start-over-button" type="button" onClick={() => setPhase("ready")}><RefreshCw size={14} /> Chuyển đổi lại với thiết lập khác</button>
+                  <div className="result-note"><CheckCircle2 size={15} /><span>Bảng và Equation có thể chọn, sửa trực tiếp trong Microsoft Word.</span></div>
+                </div>
+              ) : (
+                <div className="settings-scroll">
+                  <label className="field-label" htmlFor="output-name">Tên file kết quả</label>
+                  <div className="name-field"><input id="output-name" value={fileName} onChange={(event) => setFileName(event.target.value)} /><span>.{splitEvery ? "zip" : "docx"}</span></div>
+
+                  <label className="field-label" htmlFor="page-range">Trang cần chuyển</label>
+                  <div className="range-field"><input id="page-range" value={pageRange} onChange={(event) => setPageRange(event.target.value)} placeholder="Tất cả hoặc 1-20, 25" /><span>{documentFile?.pageCount} trang</span></div>
+
+                  <div className="setting-section">
+                    <div className="section-label"><Languages size={15} /><span>Ngôn ngữ OCR</span><small>tối đa 4</small></div>
+                    <div className="language-grid">
+                      {LANGUAGE_OPTIONS.map((language) => (
+                        <button key={language.code} className={selectedLanguages.includes(language.code) ? "is-selected" : ""} type="button" onClick={() => toggleLanguage(language.code)} disabled={phase === "processing"}>
+                          <b>{language.short}</b><span>{language.label}</span>{selectedLanguages.includes(language.code) && <Check size={12} />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="setting-section">
+                    <div className="section-label"><ScanText size={15} /><span>Cách đọc PDF</span></div>
+                    <div className="segmented three">
+                      <button className={ocrMode === "smart" ? "is-active" : ""} type="button" onClick={() => setOcrMode("smart")}><Sparkles size={13} /> Tự động</button>
+                      <button className={ocrMode === "always" ? "is-active" : ""} type="button" onClick={() => setOcrMode("always")}>Luôn OCR</button>
+                      <button className={ocrMode === "text" ? "is-active" : ""} type="button" onClick={() => setOcrMode("text")}>Chỉ text</button>
+                    </div>
+                    <p className="setting-help">Tự động cho kết quả tốt nhất với PDF vừa có text vừa có trang scan.</p>
+                  </div>
+
+                  <div className="setting-section">
+                    <div className="section-label"><Layers3 size={15} /><span>Độ bám bố cục</span></div>
+                    <div className="layout-options">
+                      <button className={layoutMode === "precise" ? "is-active" : ""} type="button" onClick={() => setLayoutMode("precise")}><span className="radio" /><div><strong>Bám sát bản gốc</strong><small>Giữ hình, đường kẻ và vị trí · file lớn hơn</small></div></button>
+                      <button className={layoutMode === "balanced" ? "is-active" : ""} type="button" onClick={() => setLayoutMode("balanced")}><span className="radio" /><div><strong>Cân bằng</strong><small>Giữ nền cho trang scan, tối ưu dung lượng</small></div></button>
+                      <button className={layoutMode === "flow" ? "is-active" : ""} type="button" onClick={() => setLayoutMode("flow")}><span className="radio" /><div><strong>Word gọn nhẹ</strong><small>Ưu tiên nội dung chảy và dễ biên tập</small></div></button>
+                    </div>
+                  </div>
+
+                  <div className="toggle-list">
+                    <label><span className="toggle-icon table"><Table2 size={16} /></span><span><strong>Dựng lại bảng</strong><small>Tạo hàng và ô Word thật</small></span><input type="checkbox" checked={preserveTables} onChange={(event) => setPreserveTables(event.target.checked)} /><i /></label>
+                    <label><span className="toggle-icon math"><Sigma size={17} /></span><span><strong>Công thức chỉnh sửa</strong><small>Chuyển sang Word Equation (OMML)</small></span><input type="checkbox" checked={editableFormulas} onChange={(event) => setEditableFormulas(event.target.checked)} /><i /></label>
+                    <label><span className="toggle-icon disk"><HardDrive size={16} /></span><span><strong>Tối ưu tài liệu lớn</strong><small>Giảm RAM, xử lý lần lượt từng trang</small></span><input type="checkbox" checked={largeDocumentMode} onChange={(event) => setLargeDocumentMode(event.target.checked)} /><i /></label>
+                  </div>
+
+                  <label className="field-label split-label" htmlFor="split-output"><FileArchive size={14} /> Chia file khi tài liệu lớn</label>
+                  <select id="split-output" className="split-select" value={splitEvery} onChange={(event) => setSplitEvery(Number(event.target.value))}>
+                    <option value={0}>Một file Word duy nhất</option>
+                    <option value={100}>Mỗi 100 trang / tệp</option>
+                    <option value={200}>Mỗi 200 trang / tệp</option>
+                    <option value={500}>Mỗi 500 trang / tệp</option>
+                  </select>
+
+                  {phase === "processing" ? (
+                    <div className="processing-card">
+                      <div className="processing-top"><span><LoaderCircle className="spin" size={17} /> Đang dựng Word</span><strong>{progressPercent}%</strong></div>
+                      <div className="progress-track"><i style={{ width: `${progressPercent}%` }} /></div>
+                      <div className="processing-meta"><span>{processing.done}/{processing.total} trang</span><span>Còn {secondsLabel(remainingSeconds)}</span></div>
+                      <div className="current-task"><ScanText size={15} /><div><strong>Trang {processing.page}</strong><small>{processing.ocr > 0 && processing.ocr < 100 ? `OCR ${processing.ocr}%` : "Đang phân tích bố cục…"}</small></div></div>
+                      <button className="cancel-button" type="button" onClick={cancelConversion}><Square size={13} fill="currentColor" /> Dừng xử lý</button>
+                    </div>
+                  ) : (
+                    <button className="convert-button" type="button" onClick={() => void startConversion()}><ScanText size={19} /> Nhận diện & xuất Word</button>
+                  )}
+
+                  <div className="privacy-note"><ShieldCheck size={17} /><span><strong>Không tải tài liệu lên máy chủ</strong><small>Mô hình ngôn ngữ chỉ được tải về trình duyệt khi cần OCR.</small></span></div>
+                  {phase === "error" && <div className="settings-error"><AlertTriangle size={15} />{errorMessage}</div>}
+                </div>
+              )}
             </aside>
           </div>
-        )}
+        </main>
+      )}
 
-        <section id="huong-dan" className="how-it-works">
-          <div><span>01</span><strong>Chọn file</strong><p>Thả một hoặc nhiều PDF vào vùng làm việc.</p></div>
-          <div><span>02</span><strong>Sắp xếp</strong><p>Kéo trang để đổi chỗ, xoay, thêm hoặc xoá.</p></div>
-          <div><span>03</span><strong>Tải xuống</strong><p>Gộp thành một PDF hoặc tách thành gói ZIP.</p></div>
-        </section>
-      </main>
-
-      <footer><span>PDF Gọn · Công cụ PDF riêng tư</span><span>Miễn phí, không quảng cáo, không tải file lên server.</span></footer>
+      <footer><span>VietOCR Studio · PDF sang Word có cấu trúc</span><span>Tiếng Việt · Đa ngôn ngữ · Bảng · Công thức</span></footer>
 
       <input
         ref={fileInputRef}
         className="visually-hidden"
         type="file"
         accept="application/pdf,.pdf"
-        multiple
-        onChange={(event) => event.target.files && void addFiles(event.target.files)}
+        onChange={(event) => event.target.files?.[0] && void loadPdf(event.target.files[0])}
       />
 
-      {blankDialogOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setBlankDialogOpen(false)}>
-          <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="blank-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="modal-close" type="button" onClick={() => setBlankDialogOpen(false)} aria-label="Đóng"><X size={18} /></button>
-            <span className="modal-icon"><FilePlus2 size={22} /></span>
-            <h2 id="blank-dialog-title">Thêm trang mới</h2>
-            <p>Trang sẽ được chèn sau vùng đang chọn, hoặc ở cuối tài liệu.</p>
-            <label className="field-label" htmlFor="blank-format">Khổ giấy</label>
-            <select id="blank-format" value={blankFormat} onChange={(event) => setBlankFormat(event.target.value as keyof typeof PAGE_SIZES)}>
-              {Object.entries(PAGE_SIZES).map(([key, size]) => <option key={key} value={key}>{size.label}</option>)}
-            </select>
-            <div className="modal-field-row">
-              <label><span className="field-label">Số trang</span><input type="number" min="1" max="50" value={blankCount} onChange={(event) => setBlankCount(Number(event.target.value))} /></label>
-              <label><span className="field-label">Màu nền</span><span className="color-field"><input type="color" value={blankBackground} onChange={(event) => setBlankBackground(event.target.value)} /><b>{blankBackground.toUpperCase()}</b></span></label>
-            </div>
-            <button className="primary-button modal-primary" type="button" onClick={addBlankPages}><Plus size={18} /> Thêm vào tài liệu</button>
-          </section>
-        </div>
-      )}
-
-      {splitDialogOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSplitDialogOpen(false)}>
-          <section className="modal-card split-modal" role="dialog" aria-modal="true" aria-labelledby="split-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="modal-close" type="button" onClick={() => setSplitDialogOpen(false)} aria-label="Đóng"><X size={18} /></button>
-            <span className="modal-icon orange"><Scissors size={22} /></span>
-            <h2 id="split-dialog-title">Tách tài liệu PDF</h2>
-            <p>Các file kết quả sẽ được gom vào một gói ZIP để tải xuống một lần.</p>
-            <div className="segmented-control" role="group" aria-label="Cách tách PDF">
-              <button type="button" className={splitMode === "every" ? "is-active" : ""} onClick={() => setSplitMode("every")}>Mỗi trang một file</button>
-              <button type="button" className={splitMode === "ranges" ? "is-active" : ""} onClick={() => setSplitMode("ranges")}>Theo khoảng trang</button>
-            </div>
-            {splitMode === "ranges" && (
-              <label className="split-range-field">
-                <span className="field-label">Các khoảng cần tách</span>
-                <input value={splitExpression} onChange={(event) => setSplitExpression(event.target.value)} placeholder="Ví dụ: 1-3, 4-6, 8" autoFocus />
-                <small>Mỗi khoảng cách nhau bằng dấu phẩy. Ví dụ trên tạo 3 file PDF.</small>
-              </label>
-            )}
-            <div className="split-result"><Archive size={18} /><span>Kết quả dự kiến</span><strong>{rangePreview}</strong></div>
-            <button className="primary-button modal-primary orange" type="button" onClick={() => void exportSplitPdf()}><Scissors size={18} /> Tách và tải ZIP</button>
-          </section>
-        </div>
-      )}
-
-      {busyMessage && (
-        <div className="busy-overlay" role="status" aria-live="polite">
-          <div><LoaderCircle size={28} /><strong>{busyMessage}</strong><span>Vui lòng giữ tab này mở.</span></div>
-        </div>
-      )}
-
-      {toast && (
-        <div className={`toast ${toast.type}`} role="status">
-          {toast.type === "success" ? <Check size={18} /> : <X size={18} />}
-          <span>{toast.message}</span>
-        </div>
-      )}
+      {toast && <div className={`toast ${toast.type}`} role="status">{toast.type === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{toast.text}</span></div>}
     </div>
   );
-}
-
-function SparklesIcon() {
-  return <span className="sparkles-icon" aria-hidden="true">✦</span>;
 }

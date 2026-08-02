@@ -1,26 +1,24 @@
-# PDF Gọn
+# VietOCR Studio
 
-PDF Gọn là công cụ web miễn phí để gộp, tách và chỉnh sửa trang PDF ngay trong trình duyệt. File không được tải lên máy chủ.
+VietOCR Studio chuyển PDF dạng text hoặc ảnh scan sang Word có thể chỉnh sửa. Toàn bộ nội dung tài liệu được xử lý trong trình duyệt; file PDF không được tải lên máy chủ.
 
-**Dùng trực tuyến:** [https://nguyenduyyck53.github.io/Taopdf/](https://nguyenduyyck53.github.io/Taopdf/)
+## Khả năng chính
 
-## Tính năng
-
-- Kéo thả và gộp nhiều file PDF.
-- Xem trước, chọn nhiều trang, sắp xếp bằng kéo thả hoặc nút điều hướng.
-- Xoay, xoá và hoàn tác/làm lại tối đa 50 bước.
-- Thêm trang trắng A4 dọc, A4 ngang hoặc Letter, có thể chọn màu nền.
-- Tách mỗi trang thành một PDF hoặc tách theo khoảng như `1-3, 4-6, 8`.
-- Tải các file đã tách trong một gói ZIP.
-- Giao diện responsive, hỗ trợ phím tắt và không cần đăng nhập.
+- Nhận diện tiếng Việt tốt, mặc định kết hợp `vie + eng` và hỗ trợ tối đa bốn ngôn ngữ cùng lúc.
+- Tự dùng lớp text có sẵn trong PDF và chỉ OCR những trang dạng ảnh.
+- Dựng lại bảng thành hàng, cột và ô Word thật.
+- Chuyển dòng công thức sang Word Equation (OMML) để tiếp tục chỉnh sửa.
+- Chế độ bám sát bản gốc giữ hình, đường kẻ và vị trí bằng nền trang đã loại chữ, sau đó phủ nội dung Word có thể sửa lên trên.
+- Xử lý tuần tự từng trang, giới hạn kích thước ảnh tạm và có thể chia hồ sơ lớn thành nhiều tệp Word trong một gói ZIP.
+- Hỗ trợ chọn khoảng trang, theo dõi tiến độ, dừng xử lý và tải lại kết quả.
 
 ## Chạy trên máy
 
-Yêu cầu Node.js 22.13 trở lên.
+Yêu cầu Node.js 22.13 trở lên và pnpm.
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Mở `http://localhost:3000`.
@@ -28,28 +26,22 @@ Mở `http://localhost:3000`.
 ## Kiểm tra và đóng gói
 
 ```bash
-npm test
+pnpm test
 ```
 
-Tạo riêng bản tĩnh dành cho GitHub Pages:
+Tạo bản tĩnh cho GitHub Pages:
 
 ```bash
-npm run build:pages
+pnpm build:pages
 ```
-
-Mỗi lần nhánh `main` được cập nhật, workflow `Deploy GitHub Pages` sẽ tự kiểm thử, build và phát hành website.
-
-## Phím tắt
-
-- `Ctrl/Cmd + A`: chọn tất cả trang.
-- `Delete` hoặc `Backspace`: xoá trang đang chọn.
-- `Ctrl/Cmd + Z`: hoàn tác.
-- `Ctrl/Cmd + Shift + Z`: làm lại.
-- `Esc`: bỏ chọn hoặc đóng hộp thoại.
 
 ## Công nghệ
 
-React, Vinext/Vite, PDF.js, pdf-lib và JSZip. Toàn bộ xử lý diễn ra phía trình duyệt.
+React, Vinext/Vite, PDF.js, Tesseract.js, docx và JSZip.
+
+## Ghi chú về OCR công thức
+
+PDF có lớp text sẽ giữ ký hiệu chính xác hơn. Với ảnh scan, công thức được tạo thành Equation có thể sửa dựa trên kết quả OCR; nên kiểm tra lại các công thức phức tạp hoặc ảnh có độ phân giải thấp.
 
 ## Giấy phép
 

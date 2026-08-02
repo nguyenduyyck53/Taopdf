@@ -12,16 +12,17 @@ async function render() {
   );
 }
 
-test("renders the finished Vietnamese PDF workspace", async () => {
+test("renders the Vietnamese OCR-to-Word workspace", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html[^>]+lang="vi"/i);
-  assert.match(html, /<title>PDF Gọn - Gộp, tách và chỉnh sửa PDF miễn phí<\/title>/i);
-  assert.match(html, /Chỉnh PDF gọn gàng/);
+  assert.match(html, /<title>VietOCR Studio - Chuyển PDF sang Word có thể chỉnh sửa<\/title>/i);
+  assert.match(html, /Biến PDF thành Word/);
   assert.match(html, /Thả PDF vào đây/);
-  assert.match(html, /File không rời khỏi thiết bị/);
+  assert.match(html, /File không rời thiết bị/);
+  assert.match(html, /og-vietocr\.png/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
 });

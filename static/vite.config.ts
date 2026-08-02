@@ -13,6 +13,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": projectRoot,
+      buffer: "buffer/",
     },
   },
   build: {

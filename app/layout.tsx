@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
-const title = "PDF Gọn - Gộp, tách và chỉnh sửa PDF miễn phí";
-const description = "Gộp, tách, sắp xếp, xoay, thêm và xoá trang PDF ngay trong trình duyệt. File luôn nằm trên thiết bị của bạn.";
+const title = "VietOCR Studio - Chuyển PDF sang Word có thể chỉnh sửa";
+const description = "OCR PDF tiếng Việt và đa ngôn ngữ, giữ bảng biểu, bố cục và chuyển công thức sang Word Equation có thể chỉnh sửa. Hỗ trợ tài liệu nhiều trang.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -19,13 +19,18 @@ export async function generateMetadata(): Promise<Metadata> {
       description,
       type: "website",
       locale: "vi_VN",
-      images: [{ url: `${origin}/og.png`, width: 2048, height: 1152, alt: "PDF Gọn - Gộp, tách và sắp xếp PDF riêng tư" }],
+      images: [{
+        url: `${origin}/og-vietocr.png`,
+        width: 1672,
+        height: 941,
+        alt: "VietOCR Studio - PDF sang Word có bảng và công thức chỉnh sửa",
+      }],
     },
     twitter: {
       card: "summary_large_image",
       title,
       description,
-      images: [`${origin}/og.png`],
+      images: [`${origin}/og-vietocr.png`],
     },
   };
 }
