@@ -65,6 +65,10 @@ test("exports Vietnamese text, tables, and editable OMML equations", async () =>
     precise: true,
     method: "text",
     confidence: 99,
+    background: Buffer.from(
+      "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==",
+      "base64",
+    ),
     lines: rows,
     blocks: analyzeLayout(rows),
   };
@@ -76,4 +80,6 @@ test("exports Vietnamese text, tables, and editable OMML equations", async () =>
   assert.match(xml, /KẾT QUẢ THÍ NGHIỆM/);
   assert.match(xml, /<w:tbl>/);
   assert.match(xml, /<m:oMath>/);
+  assert.match(xml, /<wp:anchor[^>]*relativeHeight="\d+"/);
+  assert.doesNotMatch(xml, /relativeHeight="-/);
 });
