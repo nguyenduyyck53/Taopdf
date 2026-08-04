@@ -12,10 +12,9 @@ VietOCR Studio chuyển PDF dạng text hoặc ảnh scan sang Word có thể ch
 - Xử lý tuần tự từng trang, giới hạn kích thước ảnh tạm và có thể chia hồ sơ lớn thành nhiều tệp Word trong một gói ZIP.
 - Hỗ trợ chọn khoảng trang, theo dõi tiến độ, dừng xử lý và tải lại kết quả.
 
-## Dùng bản online
+## Dùng bản online công khai
 
-- Bản chính: <https://pdf-gon-vn.barbed-fitful-2dtaru.chatgpt.site/>
-- GitHub Pages: <https://nguyenduyyck53.github.io/Taopdf/>
+- Mở trực tiếp: <https://nguyenduyyck53.github.io/Taopdf/>
 
 Website xử lý PDF và OCR trực tiếp trong trình duyệt. Người dùng chỉ cần mở link, không phải cài đặt phần mềm và không cần đăng nhập.
 
