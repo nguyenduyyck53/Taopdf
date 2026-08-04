@@ -13,7 +13,7 @@
     "preview:pages": "vite preview --config static/vite.config.ts",
     "start": "vinext start",
     "test": "vinext build && vite build --config static/vite.config.ts && node --test tests/*.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern pages-dist"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vinext --ignore-pattern .wrangler --ignore-pattern pages-dist --ignore-pattern tmp --ignore-pattern work"
   },
   "dependencies": {
     "buffer": "6.0.3",

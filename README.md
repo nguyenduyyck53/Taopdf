@@ -12,16 +12,46 @@ VietOCR Studio chuyển PDF dạng text hoặc ảnh scan sang Word có thể ch
 - Xử lý tuần tự từng trang, giới hạn kích thước ảnh tạm và có thể chia hồ sơ lớn thành nhiều tệp Word trong một gói ZIP.
 - Hỗ trợ chọn khoảng trang, theo dõi tiến độ, dừng xử lý và tải lại kết quả.
 
-## Chạy trên máy
+## Dùng bản online
+
+- Bản chính: <https://pdf-gon-vn.barbed-fitful-2dtaru.chatgpt.site/>
+- GitHub Pages: <https://nguyenduyyck53.github.io/Taopdf/>
+
+Website xử lý PDF và OCR trực tiếp trong trình duyệt. Người dùng chỉ cần mở link, không phải cài đặt phần mềm và không cần đăng nhập.
+
+## Chạy local trên máy
 
 Yêu cầu Node.js 22.13 trở lên và pnpm.
 
 ```bash
+git clone https://github.com/nguyenduyyck53/Taopdf.git
+cd Taopdf
+corepack enable
+corepack prepare pnpm@11.9.0 --activate
 pnpm install
 pnpm dev
 ```
 
-Mở `http://localhost:3000`.
+Mở <http://localhost:3000>. Khi muốn dừng, nhấn `Ctrl+C` trong cửa sổ Terminal.
+
+Chạy local theo chế độ production:
+
+```bash
+pnpm build
+pnpm start
+```
+
+## Cập nhật bản online
+
+Mỗi lần đẩy code lên nhánh `main`, GitHub Actions tự kiểm tra và cập nhật GitHub Pages:
+
+```bash
+git add .
+git commit -m "Mô tả thay đổi"
+git push origin main
+```
+
+Có thể theo dõi quá trình triển khai trong tab **Actions** của repository GitHub.
 
 ## Kiểm tra và đóng gói
 
